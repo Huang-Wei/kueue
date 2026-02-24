@@ -17,6 +17,7 @@ limitations under the License.
 package jobframework
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 
@@ -26,6 +27,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	kueue "sigs.k8s.io/kueue/apis/kueue/v1beta2"
+	"sigs.k8s.io/kueue/pkg/features"
 	"sigs.k8s.io/kueue/pkg/util/orderedgroups"
 )
 
@@ -97,6 +99,9 @@ func ValidateTASPodSetRequest(replicaPath *field.Path, replicaMetadata *metav1.O
 	if !sliceRequiredFound && sliceSizeFound {
 		allErrs = append(allErrs, field.Forbidden(annotationsPath.Key(kueue.PodSetSliceSizeAnnotation), fmt.Sprintf("may not be set when '%s' is not specified", kueue.PodSetSliceRequiredTopologyAnnotation)))
 	}
+
+	// validate multi-level constraints annotation
+	allErrs = append(allErrs, validateSliceRequiredTopologyConstraintsAnnotation(annotationsPath, replicaMetadata, sliceRequiredFound, sliceSizeFound, podSetGroupNameFound)...)
 
 	return allErrs
 }
@@ -270,4 +275,72 @@ func topologyRequestsValid(r1, r2 *kueue.PodSetTopologyRequest) bool {
 	}
 	// Check that the non-nil pair has the same value.
 	return ptr.Equal(r1.Required, r2.Required) && ptr.Equal(r1.Preferred, r2.Preferred)
+}
+
+func validateSliceRequiredTopologyConstraintsAnnotation(annotationsPath *field.Path, replicaMetadata *metav1.ObjectMeta, sliceRequiredFound bool, sliceSizeFound bool, podSetGroupNameFound bool) field.ErrorList {
+	var allErrs field.ErrorList
+
+	constraintsJSON, constraintsFound := replicaMetadata.Annotations[kueue.PodSetSliceRequiredTopologyConstraintsAnnotation]
+	if !constraintsFound {
+		return nil
+	}
+
+	fldPath := annotationsPath.Key(kueue.PodSetSliceRequiredTopologyConstraintsAnnotation)
+
+	if !features.Enabled(features.TASMultiLayerTopology) {
+		allErrs = append(allErrs, field.Forbidden(fldPath,
+			fmt.Sprintf("the %s feature gate must be enabled to use this annotation", features.TASMultiLayerTopology)))
+		return allErrs
+	}
+
+	// Mutual exclusivity with two-level fields.
+	if sliceRequiredFound {
+		allErrs = append(allErrs, field.Forbidden(fldPath,
+			fmt.Sprintf("may not be set when '%s' is specified", kueue.PodSetSliceRequiredTopologyAnnotation)))
+	}
+	if sliceSizeFound {
+		allErrs = append(allErrs, field.Forbidden(fldPath,
+			fmt.Sprintf("may not be set when '%s' is specified", kueue.PodSetSliceSizeAnnotation)))
+	}
+
+	// Incompatible with podset-group-name.
+	if podSetGroupNameFound {
+		allErrs = append(allErrs, field.Forbidden(annotationsPath.Key(kueue.PodSetGroupName),
+			fmt.Sprintf("may not be set when '%s' is specified", kueue.PodSetSliceRequiredTopologyConstraintsAnnotation)))
+	}
+
+	// Parse JSON.
+	var constraints []kueue.PodsetSliceRequiredTopologyConstraint
+	if err := json.Unmarshal([]byte(constraintsJSON), &constraints); err != nil {
+		allErrs = append(allErrs, field.Invalid(fldPath, constraintsJSON, fmt.Sprintf("must be a valid JSON array: %v", err)))
+		return allErrs
+	}
+
+	if len(constraints) == 0 {
+		allErrs = append(allErrs, field.Invalid(fldPath, constraintsJSON, "must contain at least 1 entry"))
+		return allErrs
+	}
+	if len(constraints) > 3 {
+		allErrs = append(allErrs, field.Invalid(fldPath, constraintsJSON, "must contain at most 3 entries"))
+	}
+
+	// Validate each entry.
+	for i, c := range constraints {
+		entryPath := fldPath.Index(i)
+		allErrs = append(allErrs, metavalidation.ValidateLabelName(c.Topology, entryPath.Child("topology"))...)
+		if c.Size < 1 {
+			allErrs = append(allErrs, field.Invalid(entryPath.Child("size"), c.Size, "must be greater than or equal to 1"))
+		}
+	}
+
+	// Validate divisibility: each layer's size must evenly divide the layer above it.
+	for i := 0; i < len(constraints)-1; i++ {
+		if constraints[i+1].Size > 0 && constraints[i].Size%constraints[i+1].Size != 0 {
+			allErrs = append(allErrs, field.Invalid(fldPath.Index(i+1).Child("size"),
+				constraints[i+1].Size,
+				fmt.Sprintf("must evenly divide the parent layer size %d", constraints[i].Size)))
+		}
+	}
+
+	return allErrs
 }
