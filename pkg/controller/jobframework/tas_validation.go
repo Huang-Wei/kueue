@@ -277,6 +277,12 @@ func topologyRequestsValid(r1, r2 *kueue.PodSetTopologyRequest) bool {
 	return ptr.Equal(r1.Required, r2.Required) && ptr.Equal(r1.Preferred, r2.Preferred)
 }
 
+// validateSliceRequiredTopologyConstraintsAnnotation validates the
+// multi-layer topology constraints annotation syntactically.
+// NOTE: Coarsest-to-finest ordering is NOT validated here because the
+// Topology CR's level hierarchy is unavailable at admission time (the
+// ResourceFlavor is assigned by the scheduler). Ordering validation
+// happens at scheduling time in TASFlavorSnapshot.findTopologyAssignment.
 func validateSliceRequiredTopologyConstraintsAnnotation(annotationsPath *field.Path, replicaMetadata *metav1.ObjectMeta, sliceRequiredFound bool, sliceSizeFound bool, podSetGroupNameFound bool) field.ErrorList {
 	var allErrs field.ErrorList
 
@@ -330,6 +336,17 @@ func validateSliceRequiredTopologyConstraintsAnnotation(annotationsPath *field.P
 		allErrs = append(allErrs, metavalidation.ValidateLabelName(c.Topology, entryPath.Child("topology"))...)
 		if c.Size < 1 {
 			allErrs = append(allErrs, field.Invalid(entryPath.Child("size"), c.Size, "must be greater than or equal to 1"))
+		}
+	}
+
+	// Validate uniqueness of topology labels.
+	seen := make(map[string]int, len(constraints))
+	for i, c := range constraints {
+		if prevIdx, ok := seen[c.Topology]; ok {
+			allErrs = append(allErrs, field.Duplicate(fldPath.Index(i).Child("topology"),
+				fmt.Sprintf("%s (also at index %d)", c.Topology, prevIdx)))
+		} else {
+			seen[c.Topology] = i
 		}
 	}
 

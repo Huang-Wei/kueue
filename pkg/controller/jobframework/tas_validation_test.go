@@ -124,6 +124,22 @@ func TestValidateSliceRequiredTopologyConstraintsAnnotation(t *testing.T) {
 			},
 			wantErrNum: 1, // feature gate not enabled
 		},
+		"invalid: duplicate topology labels": {
+			enableTASMultiLayer: true,
+			annotations: map[string]string{
+				kueue.PodSetRequiredTopologyAnnotation:                 "cloud.com/block",
+				kueue.PodSetSliceRequiredTopologyConstraintsAnnotation: `[{"topology":"cloud.com/rack","size":16},{"topology":"cloud.com/rack","size":4}]`,
+			},
+			wantErrNum: 1,
+		},
+		"invalid: duplicate topology label among three entries": {
+			enableTASMultiLayer: true,
+			annotations: map[string]string{
+				kueue.PodSetRequiredTopologyAnnotation:                 "cloud.com/block",
+				kueue.PodSetSliceRequiredTopologyConstraintsAnnotation: `[{"topology":"cloud.com/rack","size":16},{"topology":"kubernetes.io/hostname","size":4},{"topology":"cloud.com/rack","size":2}]`,
+			},
+			wantErrNum: 1,
+		},
 	}
 
 	for name, tc := range testCases {
