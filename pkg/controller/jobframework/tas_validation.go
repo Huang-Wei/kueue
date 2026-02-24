@@ -159,32 +159,47 @@ func validatePodSetGroupNameAnnotation(groupName string, annotationPath *field.P
 }
 
 func ValidateSliceSizeAnnotationUpperBound(replicaPath *field.Path, replicaMetadata *metav1.ObjectMeta, podSet *kueue.PodSet) field.ErrorList {
-	sliceSizeValue, sliceSizeFound := replicaMetadata.Annotations[kueue.PodSetSliceSizeAnnotation]
-	if !sliceSizeFound || podSet == nil {
+	if podSet == nil {
 		return nil
 	}
 
+	var allErrs field.ErrorList
 	annotationsPath := replicaPath.Child("annotations")
 
-	val, err := strconv.ParseInt(sliceSizeValue, 10, 32)
-	if err != nil {
-		return field.ErrorList{
-			field.Invalid(
-				annotationsPath.Key(kueue.PodSetSliceSizeAnnotation), sliceSizeValue, "must be a numeric value",
-			),
+	if sliceSizeValue, sliceSizeFound := replicaMetadata.Annotations[kueue.PodSetSliceSizeAnnotation]; sliceSizeFound {
+		val, err := strconv.ParseInt(sliceSizeValue, 10, 32)
+		if err != nil {
+			return field.ErrorList{
+				field.Invalid(
+					annotationsPath.Key(kueue.PodSetSliceSizeAnnotation), sliceSizeValue, "must be a numeric value",
+				),
+			}
 		}
-	}
 
-	if int32(val) > podSet.Count {
-		return field.ErrorList{
-			field.Invalid(
+		if int32(val) > podSet.Count {
+			allErrs = append(allErrs, field.Invalid(
 				annotationsPath.Key(kueue.PodSetSliceSizeAnnotation), sliceSizeValue,
 				fmt.Sprintf("must not be greater than pod set count %d", podSet.Count),
-			),
+			))
 		}
 	}
 
-	return nil
+	// when logic reaches here, PodSetSliceRequiredTopologyConstraintsAnnotation is already guaranteed to be mutually exclusive
+	// with PodSetSliceSizeAnnotation, so no need to checkTASMultiLayerTopology feature gate
+	if constraintsJSON, constraintsFound := replicaMetadata.Annotations[kueue.PodSetSliceRequiredTopologyConstraintsAnnotation]; constraintsFound {
+		var constraints []kueue.PodsetSliceRequiredTopologyConstraint
+		if err := json.Unmarshal([]byte(constraintsJSON), &constraints); err == nil && len(constraints) > 0 {
+			if constraints[0].Size > podSet.Count {
+				allErrs = append(allErrs, field.Invalid(
+					annotationsPath.Key(kueue.PodSetSliceRequiredTopologyConstraintsAnnotation),
+					constraints[0].Size,
+					fmt.Sprintf("must not be greater than pod set count %d", podSet.Count),
+				))
+			}
+		}
+	}
+
+	return allErrs
 }
 
 func ValidatePodSetGroupingTopology(podSets []kueue.PodSet, podSetAnnotationsByName map[kueue.PodSetReference]*field.Path) field.ErrorList {

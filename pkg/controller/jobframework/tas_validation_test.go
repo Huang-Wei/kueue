@@ -156,3 +156,61 @@ func TestValidateSliceRequiredTopologyConstraintsAnnotation(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateSliceSizeAnnotationUpperBound(t *testing.T) {
+	replicaPath := field.NewPath("spec", "template", "metadata")
+
+	testCases := map[string]struct {
+		annotations map[string]string
+		podSetCount int32
+		wantErrNum  int
+	}{
+		"valid: PodSetSliceSizeAnnotation within bound": {
+			annotations: map[string]string{
+				kueue.PodSetSliceSizeAnnotation:             "16",
+				kueue.PodSetSliceRequiredTopologyAnnotation: "cloud.com/rack",
+				kueue.PodSetRequiredTopologyAnnotation:      "cloud.com/block",
+			},
+			podSetCount: 20,
+			wantErrNum:  0,
+		},
+		"invalid: PodSetSliceSizeAnnotation exceeds pod count": {
+			annotations: map[string]string{
+				kueue.PodSetSliceSizeAnnotation:             "20",
+				kueue.PodSetSliceRequiredTopologyAnnotation: "cloud.com/rack",
+				kueue.PodSetRequiredTopologyAnnotation:      "cloud.com/block",
+			},
+			podSetCount: 16,
+			wantErrNum:  1,
+		},
+		"valid: multi-layer outermost size within bound": {
+			annotations: map[string]string{
+				kueue.PodSetRequiredTopologyAnnotation:                 "cloud.com/block",
+				kueue.PodSetSliceRequiredTopologyConstraintsAnnotation: `[{"topology":"cloud.com/rack","size":16},{"topology":"kubernetes.io/hostname","size":4}]`,
+			},
+			podSetCount: 20,
+			wantErrNum:  0,
+		},
+		"invalid: multi-layer outermost size exceeds pod count": {
+			annotations: map[string]string{
+				kueue.PodSetRequiredTopologyAnnotation:                 "cloud.com/block",
+				kueue.PodSetSliceRequiredTopologyConstraintsAnnotation: `[{"topology":"cloud.com/rack","size":16},{"topology":"kubernetes.io/hostname","size":4}]`,
+			},
+			podSetCount: 10,
+			wantErrNum:  1,
+		},
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			meta := &metav1.ObjectMeta{
+				Annotations: tc.annotations,
+			}
+			podSet := &kueue.PodSet{Count: tc.podSetCount}
+			errs := ValidateSliceSizeAnnotationUpperBound(replicaPath, meta, podSet)
+			if got := len(errs); got != tc.wantErrNum {
+				t.Errorf("ValidateSliceSizeAnnotationUpperBound() returned %d errors, want %d:\n%v", got, tc.wantErrNum, errs)
+			}
+		})
+	}
+}
