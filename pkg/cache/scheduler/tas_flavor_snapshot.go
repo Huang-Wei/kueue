@@ -570,10 +570,8 @@ func (s *TASFlavorSnapshot) findReplacementAssignment(tr *TASPodSetRequests, exi
 	}
 	requiredReplacementDomain := s.requiredReplacementDomain(tr, existingAssignment)
 	trCopy := *tr
-	sliceSize, _ := getSliceSizeWithSinglePodAsDefault(tr.PodSet.TopologyRequest)
-	if slicesRequested(tr.PodSet.TopologyRequest) && requiredReplacementDomain != "" && (tr.Count%sliceSize != 0) {
+	if slicesRequested(tr.PodSet.TopologyRequest) && requiredReplacementDomain != "" && (tr.Count%*tr.PodSet.TopologyRequest.PodSetSliceSize != 0) {
 		trCopy.PodSet = tr.PodSet.DeepCopy()
-		trCopy.PodSet.TopologyRequest.PodsetSliceRequiredTopologyConstraints = nil
 		trCopy.PodSet.TopologyRequest.PodSetSliceSize = ptr.To(int32(1))
 	}
 	replacementAssignment, reason := s.findTopologyAssignment(trCopy, nil, assumedUsage, false, requiredReplacementDomain)
@@ -625,9 +623,8 @@ func (s *TASFlavorSnapshot) requiredReplacementDomain(tr *TASPodSetRequests, ta 
 		return ""
 	}
 
-	sliceSize, _ := getSliceSizeWithSinglePodAsDefault(tr.PodSet.TopologyRequest)
-	if slicesRequested(tr.PodSet.TopologyRequest) && (tr.Count%sliceSize != 0) {
-		return s.findIncompleteSliceDomain(tr, ta, tr.Count, sliceSize)
+	if slicesRequested(tr.PodSet.TopologyRequest) && (tr.Count%*tr.PodSet.TopologyRequest.PodSetSliceSize != 0) {
+		return s.findIncompleteSliceDomain(tr, ta, tr.Count)
 	}
 
 	if !isRequired(tr.PodSet.TopologyRequest) {
@@ -678,13 +675,15 @@ func deleteDomain(currentTopologyAssignment *utiltas.TopologyAssignment, unhealt
 	return noAffectedPods
 }
 
-func (s *TASFlavorSnapshot) findIncompleteSliceDomain(tr *TASPodSetRequests, ta *utiltas.TopologyAssignment, missingCount int32, sliceSize int32) utiltas.TopologyDomainID {
+func (s *TASFlavorSnapshot) findIncompleteSliceDomain(tr *TASPodSetRequests, ta *utiltas.TopologyAssignment, missingCount int32) utiltas.TopologyDomainID {
 	// this function assumes that all assignments are at the hostname level
 	sliceTopologyKey := s.sliceLevelKeyWithDefault(tr.PodSet.TopologyRequest, s.lowestLevel())
 	sliceLevelIdx, found := s.resolveLevelIdx(sliceTopologyKey)
 	if !found {
 		return ""
 	}
+
+	sliceSize := *tr.PodSet.TopologyRequest.PodSetSliceSize
 
 	// domainToUsage maps a domain at sliceLevel to the number of pods in it
 	domainToUsage := make(map[utiltas.TopologyDomainID]int32)
