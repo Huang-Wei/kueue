@@ -6004,7 +6004,7 @@ func TestFindTopologyAssignments(t *testing.T) {
 			_ = tasindexer.SetupIndexes(ctx, utiltesting.AsIndexer(clientBuilder))
 			client := clientBuilder.Build()
 
-			tasCache := NewTASCache(client)
+			tasCache := NewTASCache(client, nil)
 			topologyInformation := topologyInformation{
 				Levels: tc.levels,
 			}

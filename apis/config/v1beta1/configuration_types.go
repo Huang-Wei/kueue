@@ -112,6 +112,10 @@ type Configuration struct {
 	// of Kueue-managed objects. A nil value disables all automatic deletions.
 	// +optional
 	ObjectRetentionPolicies *ObjectRetentionPolicies `json:"objectRetentionPolicies,omitempty"`
+
+	// TopologyAwareScheduling holds configuration options for Topology Aware Scheduling.
+	// +optional
+	TopologyAwareScheduling *TopologyAwareScheduling `json:"topologyAwareScheduling,omitempty"`
 }
 
 type ControllerManager struct {
@@ -595,6 +599,21 @@ type ObjectRetentionPolicies struct {
 	// A nil value disables automatic deletion of Workloads.
 	// +optional
 	Workloads *WorkloadRetentionPolicy `json:"workloads,omitempty"`
+}
+
+// TopologyAwareScheduling holds configuration options for Topology Aware Scheduling.
+type TopologyAwareScheduling struct {
+	// NonTASPodsPriorityThreshold defines the priority threshold for non-TAS pods.
+	// Pods with priority lower than this threshold are excluded from non-TAS
+	// usage tracking for TAS capacity accounting. This is useful when low-priority
+	// DaemonSet pods (e.g., with priority -1) would be preempted by the vanilla
+	// kube-scheduler for higher-priority workloads, so they should not count as
+	// occupied capacity.
+	// The comparison is strictly less than (`<`), so setting this to 0 excludes
+	// only negative-priority pods.
+	// When nil, all non-TAS pods are counted (preserving the default behavior).
+	// +optional
+	NonTASPodsPriorityThreshold *int32 `json:"nonTASPodsPriorityThreshold,omitempty"`
 }
 
 // WorkloadRetentionPolicy defines the policies for when Workloads should be deleted.

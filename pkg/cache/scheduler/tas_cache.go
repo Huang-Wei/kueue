@@ -40,7 +40,7 @@ type tasCache struct {
 	nonTasUsageCache *nonTasUsageCache
 }
 
-func NewTASCache(client client.Client) tasCache {
+func NewTASCache(client client.Client, priorityThreshold *int32) tasCache {
 	return tasCache{
 		client:      client,
 		flavors:     make(map[kueue.ResourceFlavorReference]flavorInformation),
@@ -49,6 +49,8 @@ func NewTASCache(client client.Client) tasCache {
 		nonTasUsageCache: &nonTasUsageCache{
 			podUsage: make(map[types.NamespacedName]podUsageValue),
 			lock:     sync.RWMutex{},
+
+			priorityThreshold: priorityThreshold,
 		},
 	}
 }
