@@ -935,6 +935,39 @@ The default would be to not set this value and inherit golang settings.</p>
 </tbody>
 </table>
 
+## `TopologyAwareScheduling`     {#config-kueue-x-k8s-io-v1beta2-TopologyAwareScheduling}
+    
+
+**Appears in:**
+
+
+
+<p>TopologyAwareScheduling holds configuration options for Topology Aware Scheduling.</p>
+
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr><td><code>nonTASPodsPriorityThreshold</code><br/>
+<code>int32</code>
+</td>
+<td>
+   <p>NonTASPodsPriorityThreshold defines the priority threshold for non-TAS pods.
+Pods with priority lower than this threshold are excluded from non-TAS
+usage tracking for TAS capacity accounting. This is useful when low-priority
+DaemonSet pods (e.g., with priority -1) would be preempted by the vanilla
+kube-scheduler for higher-priority workloads, so they should not count as
+occupied capacity.
+The comparison is strictly less than (<code>&lt;</code>), so setting this to 0 excludes
+only negative-priority pods.
+When nil, all non-TAS pods are counted (preserving the default behavior).</p>
+</td>
+</tr>
+</tbody>
+</table>
+
 ## `WaitForPodsReady`     {#config-kueue-x-k8s-io-v1beta2-WaitForPodsReady}
     
 

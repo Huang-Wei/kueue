@@ -36,11 +36,13 @@ import (
 	utiltas "sigs.k8s.io/kueue/pkg/util/tas"
 )
 
-func newNonTasUsageReconciler(k8sClient client.Client, cache *schdcache.Cache, roleTracker *roletracker.RoleTracker) *NonTasUsageReconciler {
+func newNonTasUsageReconciler(k8sClient client.Client, cache *schdcache.Cache, roleTracker *roletracker.RoleTracker, priorityThreshold *int32) *NonTasUsageReconciler {
 	return &NonTasUsageReconciler{
 		k8sClient:   k8sClient,
 		cache:       cache,
 		roleTracker: roleTracker,
+
+		priorityThreshold: priorityThreshold,
 	}
 }
 
@@ -50,6 +52,8 @@ type NonTasUsageReconciler struct {
 	k8sClient   client.Client
 	cache       *schdcache.Cache
 	roleTracker *roletracker.RoleTracker
+
+	priorityThreshold *int32
 }
 
 var _ reconcile.Reconciler = (*NonTasUsageReconciler)(nil)
@@ -75,26 +79,29 @@ func (r *NonTasUsageReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	return ctrl.Result{}, nil
 }
 
-func filterPod(pod *corev1.Pod) bool {
+func (r *NonTasUsageReconciler) filterPod(pod *corev1.Pod) bool {
 	if utiltas.IsTAS(pod) {
 		return false
 	} else if len(pod.Spec.NodeName) == 0 {
 		// skip unscheduled pods as they don't use any capacity.
 		return false
 	}
+	if r.priorityThreshold != nil && pod.Spec.Priority != nil && *pod.Spec.Priority < *r.priorityThreshold {
+		return false
+	}
 	return true
 }
 
 func (r *NonTasUsageReconciler) Create(e event.TypedCreateEvent[*corev1.Pod]) bool {
-	return filterPod(e.Object)
+	return r.filterPod(e.Object)
 }
 
 func (r *NonTasUsageReconciler) Update(e event.TypedUpdateEvent[*corev1.Pod]) bool {
-	return filterPod(e.ObjectNew)
+	return r.filterPod(e.ObjectNew)
 }
 
 func (r *NonTasUsageReconciler) Delete(e event.TypedDeleteEvent[*corev1.Pod]) bool {
-	return filterPod(e.Object)
+	return r.filterPod(e.Object)
 }
 
 func (r *NonTasUsageReconciler) Generic(event.TypedGenericEvent[*corev1.Pod]) bool {

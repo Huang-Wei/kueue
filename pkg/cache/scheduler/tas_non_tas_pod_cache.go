@@ -34,6 +34,8 @@ import (
 type nonTasUsageCache struct {
 	podUsage map[types.NamespacedName]podUsageValue
 	lock     sync.RWMutex
+
+	priorityThreshold *int32
 }
 
 type podUsageValue struct {
@@ -51,6 +53,13 @@ func (n *nonTasUsageCache) update(pod *corev1.Pod, log logr.Logger) {
 	if utilpod.IsTerminated(pod) {
 		log.V(5).Info("Deleting terminated pod from the cache")
 		delete(n.podUsage, client.ObjectKeyFromObject(pod))
+		return
+	}
+
+	// skip pods below the priority threshold as they would be preempted
+	// by the kube-scheduler and should not count as occupied capacity.
+	if n.priorityThreshold != nil && pod.Spec.Priority != nil && *pod.Spec.Priority < *n.priorityThreshold {
+		log.V(5).Info("Skipping pod below priority threshold", "priority", *pod.Spec.Priority, "threshold", *n.priorityThreshold)
 		return
 	}
 

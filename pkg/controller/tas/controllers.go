@@ -43,7 +43,11 @@ func SetupControllers(mgr ctrl.Manager, queues *qcache.Manager, cache *schdcache
 	if ctrlName, err := nodeRec.SetupWithManager(mgr, cfg); err != nil {
 		return ctrlName, err
 	}
-	nonTasUsageController := newNonTasUsageReconciler(mgr.GetClient(), cache, roleTracker)
+	var tasPriorityThreshold *int32
+	if cfg.TopologyAwareScheduling != nil {
+		tasPriorityThreshold = cfg.TopologyAwareScheduling.NonTASPodsPriorityThreshold
+	}
+	nonTasUsageController := newNonTasUsageReconciler(mgr.GetClient(), cache, roleTracker, tasPriorityThreshold)
 	if ctrlName, err := nonTasUsageController.SetupWithManager(mgr); err != nil {
 		return ctrlName, err
 	}

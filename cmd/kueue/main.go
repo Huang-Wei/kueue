@@ -295,6 +295,9 @@ func main() {
 		queueOptions = append(queueOptions, qcache.WithAdmissionFairSharing(cfg.AdmissionFairSharing))
 		cacheOptions = append(cacheOptions, schdcache.WithAdmissionFairSharing(cfg.AdmissionFairSharing))
 	}
+	if cfg.TopologyAwareScheduling != nil {
+		cacheOptions = append(cacheOptions, schdcache.WithTASPriorityThreshold(cfg.TopologyAwareScheduling.NonTASPodsPriorityThreshold))
+	}
 	cCache := schdcache.New(mgr.GetClient(), cacheOptions...)
 
 	// setup inadmissible workload requeuer
