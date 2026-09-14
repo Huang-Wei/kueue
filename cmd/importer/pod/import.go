@@ -23,6 +23,7 @@ import (
 	"maps"
 	"time"
 
+	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -45,11 +46,9 @@ var realClock = clock.RealClock{}
 
 func Import(ctx context.Context, c client.Client, importCache *cache.ImportCache, jobs uint) error {
 	ch := make(chan corev1.Pod)
+	listErrCh := make(chan error, 1)
 	go func() {
-		err := ListPods(ctx, c, importCache.Namespaces, ch)
-		if err != nil {
-			ctrl.LoggerFrom(ctx).Error(err, "Listing pods")
-		}
+		listErrCh <- ListPods(ctx, c, importCache.Namespaces, ch)
 	}()
 	summary := ProcessConcurrently(ch, jobs, func(p *corev1.Pod) (bool, error) {
 		log := ctrl.LoggerFrom(ctx).WithValues("pod", klog.KObj(p))
@@ -99,8 +98,21 @@ func Import(ctx context.Context, c client.Client, importCache *cache.ImportCache
 	for e, pods := range summary.ErrorsForPods {
 		log.Info("Import failed for Pods", "err", e, "occurrences", len(pods), "observedFirstIn", pods[0])
 	}
-	return errors.Join(summary.Errors...)
+	// A listing failure leaves Pods unimported, so it must not be reported as success.
+	return errors.Join(append(summary.Errors, <-listErrCh)...)
 }
+
+const (
+	// retryLimit caps the number of retries done for a single API call. The
+	// retries have to be bounded: an import worker that keeps retrying a Pod
+	// never picks up another one, and once every worker is stuck the importer
+	// hangs instead of terminating.
+	retryLimit = 5
+
+	// retryDelay is the base of the linear backoff used when the API server
+	// does not suggest a delay itself, as is the case for conflicts.
+	retryDelay = 100 * time.Millisecond
+)
 
 func checkError(err error) (retry, reload bool, timeout time.Duration) {
 	retrySeconds, retry := apierrors.SuggestsClientDelay(err)
@@ -114,56 +126,73 @@ func checkError(err error) (retry, reload bool, timeout time.Duration) {
 	return false, false, 0
 }
 
-func addLabels(ctx context.Context, c client.Client, p *corev1.Pod, queue string, addLabels map[string]string) error {
-	p.Labels[controllerconstants.QueueLabel] = queue
-	p.Labels[constants.ManagedByKueueLabelKey] = constants.ManagedByKueueLabelValue
-	maps.Copy(p.Labels, addLabels)
-
-	err := c.Update(ctx, p)
-	retry, reload, timeout := checkError(err)
-
-	for retry {
-		if timeout >= 0 {
-			select {
-			case <-ctx.Done():
-				return errors.New("context canceled")
-			case <-time.After(timeout):
-			}
+// retryOnAPIError calls do until it succeeds or fails with an error that is not
+// worth retrying, giving up after retryLimit retries.
+//
+// reload is called before replaying an operation that failed with a conflict and
+// should refresh the caller's copy of the object. An update or an apply built
+// from a stale copy carries a stale resourceVersion, so the API server rejects
+// the replay with the very same conflict; without reloading, the retries can
+// never converge.
+func retryOnAPIError(ctx context.Context, log logr.Logger, reload func() error, do func() error) error {
+	err := do()
+	for attempt := 1; ; attempt++ {
+		retry, needsReload, timeout := checkError(err)
+		if !retry {
+			return err
 		}
-		if reload {
-			err = c.Get(ctx, client.ObjectKeyFromObject(p), p)
-			if err != nil {
-				retry, reload, timeout = checkError(err)
+		if attempt > retryLimit {
+			return fmt.Errorf("gave up after %d retries: %w", retryLimit, err)
+		}
+		if timeout <= 0 {
+			timeout = time.Duration(attempt) * retryDelay
+		}
+		log.V(2).Info("Retrying after API error", "attempt", attempt, "after", timeout, "err", err)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(timeout):
+		}
+		if needsReload && reload != nil {
+			if err = reload(); err != nil {
 				continue
 			}
-			p.Labels[controllerconstants.QueueLabel] = queue
-			p.Labels[constants.ManagedByKueueLabelKey] = constants.ManagedByKueueLabelValue
-			maps.Copy(p.Labels, addLabels)
 		}
-		err = c.Update(ctx, p)
-		retry, reload, timeout = checkError(err)
+		err = do()
 	}
-	return err
+}
+
+func addLabels(ctx context.Context, c client.Client, p *corev1.Pod, queue string, addLabels map[string]string) error {
+	setLabels := func() {
+		if p.Labels == nil {
+			p.Labels = make(map[string]string, 2+len(addLabels))
+		}
+		p.Labels[controllerconstants.QueueLabel] = queue
+		p.Labels[constants.ManagedByKueueLabelKey] = constants.ManagedByKueueLabelValue
+		maps.Copy(p.Labels, addLabels)
+	}
+
+	setLabels()
+	return retryOnAPIError(ctx, ctrl.LoggerFrom(ctx),
+		func() error {
+			if err := c.Get(ctx, client.ObjectKeyFromObject(p), p); err != nil {
+				return err
+			}
+			setLabels()
+			return nil
+		},
+		func() error { return c.Update(ctx, p) },
+	)
 }
 
 func createWorkload(ctx context.Context, c client.Client, wl *kueue.Workload) error {
-	err := c.Create(ctx, wl)
-	if apierrors.IsAlreadyExists(err) {
-		return nil
-	}
-	retry, _, timeout := checkError(err)
-	for retry {
-		if timeout >= 0 {
-			select {
-			case <-ctx.Done():
-				return errors.New("context canceled")
-			case <-time.After(timeout):
-			}
+	return retryOnAPIError(ctx, ctrl.LoggerFrom(ctx), nil, func() error {
+		err := c.Create(ctx, wl)
+		if apierrors.IsAlreadyExists(err) {
+			return nil
 		}
-		err = c.Create(ctx, wl)
-		retry, _, timeout = checkError(err)
-	}
-	return err
+		return err
+	})
 }
 
 func admitWorkload(ctx context.Context, c client.Client, wl *kueue.Workload, cq *kueue.ClusterQueue) error {
@@ -205,23 +234,14 @@ func admitWorkload(ctx context.Context, c client.Client, wl *kueue.Workload, cq 
 		return true, nil
 	}
 
-	for {
-		err := workload.PatchAdmissionStatus(ctx, c, wl, realClock, update, workload.WithForceApply())
-		retry, _, timeout := checkError(err)
-		if !retry {
-			if err != nil {
-				return err
-			}
-			break
-		}
-		if timeout >= 0 {
-			select {
-			case <-ctx.Done():
-				return errors.New("context canceled")
-			case <-time.After(timeout):
-			}
-		}
-	}
-
-	return nil
+	return retryOnAPIError(ctx, ctrl.LoggerFrom(ctx),
+		// The apply carries the Workload's resourceVersion, so it keeps
+		// conflicting until we pick up the version written by whoever modified
+		// the Workload after we created it, typically kueue-controller-manager
+		// reconciling it.
+		func() error { return c.Get(ctx, client.ObjectKeyFromObject(wl), wl) },
+		func() error {
+			return workload.PatchAdmissionStatus(ctx, c, wl, realClock, update, workload.WithForceApply())
+		},
+	)
 }

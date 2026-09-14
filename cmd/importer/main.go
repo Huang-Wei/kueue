@@ -195,7 +195,10 @@ func getKubeClient(cmd *cobra.Command) (client.Client, error) {
 
 func importCmd(cmd *cobra.Command, _ []string) error {
 	log := ctrl.Log.WithName("import")
-	ctx := ctrl.LoggerInto(context.Background(), log)
+	// SetupSignalHandler lets the first SIGINT/SIGTERM cancel the in-flight API
+	// calls, so the importer stops and reports what it managed to do; a second
+	// one exits right away.
+	ctx := ctrl.LoggerInto(ctrl.SetupSignalHandler(), log)
 	cWorkers, _ := cmd.Flags().GetUint(ConcurrencyFlag)
 	c, err := getKubeClient(cmd)
 	if err != nil {
